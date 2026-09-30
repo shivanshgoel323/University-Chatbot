@@ -16,7 +16,7 @@ st.set_page_config(
 
 LOGO_FILE = "university_logo.png"
 
-# Automatically find the question papers folder
+# Automatically find question papers folder
 def get_question_papers_folder():
     candidates = ["question_papers", "question_paper", "questionpapers", "pyq", "pyqs", "data/question_papers"]
     for folder in candidates:
@@ -84,9 +84,9 @@ if "student_profile" not in st.session_state:
 
 if "suggestions" not in st.session_state:
     st.session_state.suggestions = [
-        "What is the admission fee for B.Tech?",
         "What is the hostel fee?",
-        "What is the exam schedule?",
+        "What is the admission fee for B.Tech?",
+        "What is the DBMS syllabus?",
         "Previous year question papers",
     ]
 
@@ -112,9 +112,9 @@ with st.sidebar:
         st.session_state.student_profile = {"branch": None, "year": None}
         st.session_state.quiz_state = {"active": False, "subject": "", "questions": [], "current_idx": 0, "score": 0}
         st.session_state.suggestions = [
-            "What is the admission fee for B.Tech?",
             "What is the hostel fee?",
-            "What is the exam schedule?",
+            "What is the admission fee for B.Tech?",
+            "What is the DBMS syllabus?",
             "Previous year question papers",
         ]
         st.rerun()
@@ -127,69 +127,35 @@ with st.sidebar:
 
     st.markdown("---")
     st.write("Topics covered:")
-    st.write("• Fees & Scholarships\n• Hostel & Mess Charges\n• Exam Dates & Schedules\n• Syllabus & Course Details\n• Interactive Practice Quizzes\n• Previous Year Question Papers")
+    st.write("• Hostel & Mess Fees (AC / Non-AC)\n• Admission & Academic Fees\n• Syllabus & Exam Dates\n• Interactive Practice Quizzes\n• Previous Year Question Papers")
 
 
 # ------------------------------------------------------------
-# Query Analyzer
+# Smart Search Query Generator (Separates Hostel from Admission)
 # ------------------------------------------------------------
-def analyze_query(user_query: str, history: list, profile: dict):
-    recent_context = ""
-    if history:
-        recent_context = "\n".join(f"{m['role']}: {m['content']}" for m in history[-2:])
+def get_search_queries(user_query: str) -> list[str]:
+    """Generates precise search terms ensuring hostel and admission queries never collide."""
+    q_lower = user_query.lower()
+    queries = [user_query]
 
-    system_prompt = f"""
-You are an NLP analyzer for an ABES University Chatbot.
-Known Student: Branch: {profile.get('branch')}, Year: {profile.get('year')}
+    # Clean out institution acronym noise if present
+    clean = re.sub(r"\babes\b", "", q_lower, flags=re.IGNORECASE).strip()
+    if clean and clean != q_lower:
+        queries.append(clean)
 
-Tasks:
-1. Detect user's language: 'English', 'Hindi', or 'Hinglish'.
-2. Extract branch (CSE, IT, ECE, ME, etc.) or year (1st, 2nd, 3rd, 4th) if mentioned.
-3. Optimize the query into 2-5 English keywords for searching university documents:
-   - If user asks about 'exams', rewrite to: 'academic calendar examination schedule sessional end sem theory practical datesheet'.
-   - If user asks about 'abes fee', rewrite to: 'admission fee tuition fee structure schedule of charges'.
-   - If user asks about 'hostel', rewrite to: 'hostel fee room rent mess charges security'.
-4. Provide 3 short, relevant follow-up questions the student might ask next.
+    # Specific category routing:
+    if "hostel" in q_lower or "mess" in q_lower:
+        queries.append("hostel fee structure lodging boarding mess charges security deposit AC Non-AC seater")
+    elif "admission" in q_lower or "tuition" in q_lower or "btech fee" in q_lower or "college fee" in q_lower or "abes fee" in q_lower:
+        queries.append("academic fee tuition fee admission schedule of charges b.tech")
+    elif "syllabus" in q_lower or "unit" in q_lower:
+        queries.append(user_query + " complete syllabus units topics course code")
+    elif "exam" in q_lower or "schedule" in q_lower or "date" in q_lower:
+        queries.append("academic calendar examination schedule sessional sessional test end sem")
+    elif "placement" in q_lower or "package" in q_lower:
+        queries.append("placement statistics packages highest average companies recruitment")
 
-Respond ONLY in valid JSON:
-{{
-  "detected_language": "<English|Hindi|Hinglish>",
-  "detected_branch": "<CSE|IT|ECE|null>",
-  "detected_year": "<1st|2nd|3rd|4th|null>",
-  "search_query": "<english search keywords>",
-  "follow_ups": ["<suggestion 1>", "<suggestion 2>", "<suggestion 3>"]
-}}
-"""
-    try:
-        response = ai.chat.completions.create(
-            model=ACTIVE_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Context:\n{recent_context}\n\nMessage: {user_query}"},
-            ],
-            temperature=0.0,
-            max_tokens=220,
-        )
-        text = response.choices[0].message.content.strip()
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            if data.get("detected_branch"):
-                profile["branch"] = data["detected_branch"]
-            if data.get("detected_year"):
-                profile["year"] = data["detected_year"]
-
-            search_query = data.get("search_query", user_query)
-            lang = data.get("detected_language", "English")
-            follow_ups = [s.strip() for s in data.get("follow_ups", []) if s.strip()]
-            return search_query, lang, follow_ups
-    except Exception:
-        pass
-
-    clean = re.sub(r"\babes\b", "", user_query, flags=re.IGNORECASE).strip()
-    if "fee" in clean.lower():
-        clean += " admission fee tuition fee structure"
-    return clean or user_query, "English", []
+    return queries
 
 
 # ------------------------------------------------------------
@@ -234,14 +200,13 @@ if not st.session_state.messages:
     with st.chat_message("assistant"):
         st.markdown(
             "👋 Welcome! I'm your ABES University assistant. "
-            "I can help you with admission fees, hostel charges, syllabus, exam dates, placements, or question papers! What would you like to know?"
+            "I can help you with hostel fees, admission charges, syllabus, exams, or question papers! What would you like to know?"
         )
 
 for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-        # Render download buttons permanently for question paper messages
         if message.get("pyq_files"):
             st.markdown("---")
             folder = message.get("pyq_folder", QUESTION_PAPERS_FOLDER)
@@ -333,6 +298,14 @@ if user_input:
 
     question_lower = user_input.lower().strip()
 
+    # Track student profile if mentioned
+    for branch_name in ["cse", "it", "ece", "me", "ee", "civil"]:
+        if f" {branch_name} " in f" {question_lower} ":
+            st.session_state.student_profile["branch"] = branch_name.upper()
+    for year_name in ["1st year", "2nd year", "3rd year", "4th year"]:
+        if year_name in question_lower:
+            st.session_state.student_profile["year"] = year_name
+
     # --------------------------------------------------------
     # 1. Previous Year Question Papers (PYQ)
     # --------------------------------------------------------
@@ -342,29 +315,15 @@ if user_input:
     ]
     if any(t in question_lower for t in pyq_triggers):
         folder = get_question_papers_folder()
-        if os.path.exists(folder):
-            all_pdfs = sorted([f for f in os.listdir(folder) if f.lower().endswith(".pdf")])
-        else:
-            all_pdfs = []
+        all_pdfs = sorted([f for f in os.listdir(folder) if f.lower().endswith(".pdf")]) if os.path.exists(folder) else []
 
         if all_pdfs:
-            # Check if user mentioned a specific subject (e.g. "DBMS pyq")
             stop_words = {"the", "for", "and", "pyq", "pyqs", "ques", "question", "questions", "paper", "papers", "previous", "year", "old", "past", "exam", "give", "me", "show", "i", "want", "of", "in"}
             user_tokens = [w for w in re.findall(r'\b\w+\b', question_lower) if w not in stop_words and len(w) > 2]
-
-            matched = []
-            if user_tokens:
-                for p in all_pdfs:
-                    if any(t in p.lower() for t in user_tokens):
-                        matched.append(p)
-
+            matched = [p for p in all_pdfs if any(t in p.lower() for t in user_tokens)] if user_tokens else []
             selected_pdfs = matched if matched else all_pdfs
 
-            if matched:
-                content = f"Here are the previous year question papers matching your request (**{len(matched)} paper(s) found**). Click below to download:"
-            else:
-                content = f"Here are all available previous year question papers (**{len(all_pdfs)} paper(s) found**). Click below to download:"
-
+            content = f"Here are the previous year question papers available for download (**{len(selected_pdfs)} paper(s)**). Click below to download:"
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": content,
@@ -374,10 +333,10 @@ if user_input:
         else:
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": f"⚠️ No PDF files found in the `{folder}` folder. Please place your question paper PDFs in that folder."
+                "content": f"⚠️ No PDF files found in the `{folder}` folder. Please place your question paper PDFs in that directory."
             })
 
-        st.session_state.suggestions = ["What is the fee structure?", "What is the exam schedule?", "Take a practice quiz"]
+        st.session_state.suggestions = ["What is the hostel fee?", "What is the DBMS syllabus?", "Take a practice quiz"]
         st.rerun()
 
     # --------------------------------------------------------
@@ -385,8 +344,7 @@ if user_input:
     # --------------------------------------------------------
     quiz_triggers = ["quiz", "test me", "viva question", "ask me question", "mcq"]
     if any(t in question_lower for t in quiz_triggers):
-        search_query, _, _ = analyze_query(user_input, st.session_state.messages, st.session_state.student_profile)
-        query_embedding = model.encode(search_query).tolist()
+        query_embedding = model.encode(user_input).tolist()
         results = collection.query(query_embeddings=[query_embedding], n_results=4, include=["documents"])
         docs = results.get("documents", [[]])[0]
         context = "\n".join(docs)
@@ -406,44 +364,47 @@ if user_input:
             st.rerun()
 
     # --------------------------------------------------------
-    # 3. Standard RAG Retrieval & Generation
+    # 3. Dual-Query RAG Search (Guarantees Hostel & Fee Accuracy)
     # --------------------------------------------------------
     with st.status("🔍 Searching university records...", expanded=False) as status:
-        search_query, detected_lang, follow_ups = analyze_query(
-            user_input, st.session_state.messages, st.session_state.student_profile
-        )
-
+        search_terms = get_search_queries(user_input)
         documents = []
         sources = set()
+        seen_chunks = set()
 
         try:
-            query_embedding = model.encode(search_query).tolist()
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=6,
-                include=["documents", "metadatas", "distances"],
-            )
+            for term in search_terms:
+                emb = model.encode(term).tolist()
+                results = collection.query(
+                    query_embeddings=[emb],
+                    n_results=5,
+                    include=["documents", "metadatas", "distances"],
+                )
+                raw_docs = results.get("documents", [[]])[0]
+                raw_meta = results.get("metadatas", [[]])[0]
 
-            raw_docs = results.get("documents", [[]])[0]
-            raw_meta = results.get("metadatas", [[]])[0]
-            raw_dist = results.get("distances", [[]])[0]
-
-            for doc, meta, dist in zip(raw_docs, raw_meta, raw_dist):
-                if dist < 2.0:
-                    documents.append(doc)
-                    source_name = meta.get("source", "University Document") if meta else "University Document"
-                    sources.add(source_name)
+                for doc, meta in zip(raw_docs, raw_meta):
+                    short_key = doc[:120].strip()
+                    if short_key not in seen_chunks:
+                        seen_chunks.add(short_key)
+                        documents.append(doc)
+                        if meta and "source" in meta:
+                            sources.add(meta["source"])
 
         except Exception as e:
             st.error(f"Search error: {e}")
 
         status.update(label="🤖 Generating answer...", state="running")
 
+    # --------------------------------------------------------
+    # Response Generation
+    # --------------------------------------------------------
     exam_triggers = ["exam", "exams", "schedule", "date sheet", "datesheet", "when are exams", "exam date"]
     is_exam_query = any(trigger in question_lower for trigger in exam_triggers)
+    is_placement_query = any(trigger in question_lower for trigger in ["placement", "package", "packages", "salary", "companies", "recruiters"])
 
     with st.chat_message("assistant"):
-        if documents or is_exam_query:
+        if documents or is_exam_query or is_placement_query:
             context = "\n\n---\n\n".join(documents)
 
             student_ctx = f"Branch: {st.session_state.student_profile['branch'] or 'General'}, Year: {st.session_state.student_profile['year'] or 'All'}"
@@ -454,16 +415,16 @@ Tone: Clear, polite, student-friendly, and informative.
 Student Context: {student_ctx}
 
 INSTRUCTIONS:
-1. LANGUAGE: Reply in the same language as the student ({detected_lang} - English, Hindi, or Hinglish).
-2. EXAM QUERIES:
-   - If official dates are in the documents, show them in a Markdown schedule table (CT-1, CT-2, PUT, End-Sem Theory & Practical).
-   - If specific branch dates are pending, explain the standard AKTU schedule:
-     * Odd Semesters (1st, 3rd, 5th, 7th): Internal Sessionals in Oct/Nov, End-Sem Theory Exams in December–January.
-     * Even Semesters (2nd, 4th, 6th, 8th): Internal Sessionals in March/April, End-Sem Theory Exams in May–June.
-     * Advise checking the ABES student notice board or AKTU ERP portal, and ask which semester they are preparing for.
-3. GROUNDING: Use retrieved documents as truth. Never invent fee amounts.
-4. FORMATTING: Use Markdown tables for fee structures and bullet points for lists.
-5. PROACTIVE CLOSING: End with 1 helpful follow-up question.
+1. LANGUAGE:
+   - Reply in the same language style as the student (English, Hindi, or Hinglish).
+2. HOSTEL FEES:
+   - When asked about hostel fees, provide the complete fee breakdown (Non-AC vs AC, 2-seater, 3-seater, 4-seater, laundry, security deposit) using clean Markdown tables.
+3. EXAM QUERIES:
+   - If official dates are in documents, show them. Otherwise explain the standard AKTU schedule (Odd sem: Dec–Jan, Even sem: May–June) and suggest checking the ABES student notice board.
+4. PLACEMENT QUERIES:
+   - If official placement figures are in the documents, display them clearly.
+   - If specific placement package statistics are not in the uploaded documents, explain that students should visit the Training & Placement Cell (T&P) or abes.ac.in for the official placement report, and mention that top recruiters include companies like TCS, Infosys, Wipro, Cognizant, and Capgemini.
+5. FORMATTING: Use Markdown tables for numbers and bullet points for lists. Always end with 1 helpful follow-up question.
 """
 
             messages = [{"role": "system", "content": system_prompt}]
@@ -508,22 +469,18 @@ INSTRUCTIONS:
                 st.markdown(full_answer)
 
         else:
-            if detected_lang == "Hindi":
-                full_answer = "माफ़ कीजिये, यह जानकारी विश्वविद्यालय के दस्तावेज़ों में नहीं मिली। कृपया कॉलेज कार्यालय या abes.ac.in पर संपर्क करें।"
-            elif detected_lang == "Hinglish":
-                full_answer = "Yeh information abhi uploaded documents mein nahi mili hai. Please college office ya abes.ac.in check karein."
-            else:
-                full_answer = "This information does not appear to be present in the available university documents. Please check with the university office or official website (abes.ac.in)."
+            full_answer = "This information does not appear to be present in the available university documents. Please check with the university administrative office or the official website (abes.ac.in)."
             st.markdown(full_answer)
 
-    if follow_ups and any(len(f.strip()) > 3 for f in follow_ups):
-        st.session_state.suggestions = [f for f in follow_ups if len(f.strip()) > 3]
+    # Dynamic suggestions for next turn
+    if "hostel" in question_lower:
+        st.session_state.suggestions = ["What are the mess facilities?", "What is the B.Tech admission fee?", "Previous year question papers"]
+    elif "fee" in question_lower:
+        st.session_state.suggestions = ["What is the hostel fee?", "Are there scholarships available?", "Previous year question papers"]
+    elif "exam" in question_lower:
+        st.session_state.suggestions = ["What is the DBMS syllabus?", "Take a practice quiz", "Previous year question papers"]
     else:
-        st.session_state.suggestions = [
-            "What is the hostel fee?",
-            "Take a quiz on this topic",
-            "What are the placement packages?",
-        ]
+        st.session_state.suggestions = ["What is the hostel fee?", "What is the admission fee?", "Previous year question papers"]
 
     st.session_state.messages.append({"role": "assistant", "content": full_answer})
     st.rerun()
